@@ -1,0 +1,18 @@
+curses_colors:
+  c_default: -1
+  c_black: 0
+  c_red: 1
+  c_green: 2
+  c_yellow: 3
+  c_blue: 4
+  c_magenta: 5
+  c_cyan: 6
+  c_white: 7
+default:
+  background: {{c_default}}
+  std_text: {{c_default}}
+  menu_header: {{c_cyan}}
+  action_key: {{c_green}}
+  error: {{c_red}}
+  success: {{c_green}}
+  warning: {{c_yellow}}

@@ -3,6 +3,7 @@ import asyncio
 import curses
 import logging
 import pathlib
+import yaml
 from datetime import datetime
 
 MAGIC = 'pr7d68j1'
@@ -20,6 +21,7 @@ class PTZ_Server:
     retry_timer = 5
     s_addr = None
     writer = None
+    keep_open = True
 
     def __init__(self, s_addr: str='fc0', port: int=M_PORT) -> None:
         self.s_addr = s_addr
@@ -44,7 +46,7 @@ class PTZ_Server:
         """
         Connect to the ptz_server
         """
-        while True:
+        while self.keep_open:
             logging.info(
                 f'Attempting to connect to server at {self.s_addr}:{self.port}'
             )
@@ -102,42 +104,92 @@ class PTZ_Server:
         self.writer.write_eof()    
 
     async def close(self) -> None:
-        self.writer.close()
-        await self.writer.wait_closed()
-        logging.info('Server connection closed')
+        if self.is_connected():
+            self.writer.close()
+            await self.writer.wait_closed()
+            logging.info('Server connection closed')
+        else: self.keep_open = False
 
-def main(stdscr: curses.window) -> None:
-    mdir = pathlib.Path(__file__).parent.resolve()
-    init_logger(mdir)
-    asyncio.run(async_main(stdscr))
+class cursed_display:
+    """
+    curses display object
+    """
+    colors = {
+        'background': -1,
+        'std_text': -1,
+        'menu_header': -1,
+        'action_key': -1,
+        'error': -1,
+        'success': -1,
+        'warning': -1
+    }
+    theme_name = ''
+    stdscr = None
+    serv = None
 
-async def async_main(stdscr: curses.window) -> None:
-    serv = PTZ_Server()
-    async with asyncio.TaskGroup() as tg:
-        serv_con = tg.create_task(serv.connect())
-        con = tg.create_task(console(stdscr, tg, serv))
-    serv.close()
+    def __init__(self, stdscr: curses.window, mdir: pathlib.Path,
+                 serv: PTZ_Server, theme_name: str='default') -> None:
+        self.serv = serv
+        self.stdscr = stdscr
+        self.theme_name = theme_name
+        self.load_theme(mdir)
 
-async def console(stdscr: curses.window, tg: asyncio.TaskGroup, 
-                  serv: PTZ_Server) -> None:
-    curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
-    curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
-    async def display_menu_main() -> None:
-        stdscr.clear()
-        stdscr.addstr(
+    def draw_menu_main(self) -> None:
+        self.stdscr.clear()
+        self.stdscr.addstr(
             0,0,
             '## Pautzke Bait Co., Inc. - Client',
             curses.color_pair(1)
         )
-        stdscr.addstr(
+        self.stdscr.addstr(
             1,0,
-            f'# Connected: {serv.is_connected()}',
+            f'# Connected: {self.serv.is_connected()}',
             curses.color_pair(2)
         )
-        stdscr.refresh()
-# TODO: add main menu, especially updating of server status and shutting down of said server
+        self.stdscr.refresh()
+    
+    async def get_ch(self) -> int:
+        self.stdscr.nodelay(True)
+        while True:
+            char = self.stdscr.getch()
+            if char == curses.ERR: await asyncio.sleep(0)
+            else: return char
 
-    await display_menu_main()
+    def load_theme(self, mdir: pathlib.Path) -> None:
+        curses.use_default_colors()
+        try:
+            with open(mdir / 'themes') as file:
+                themes = yaml.safe_load(file)
+            for key in self.colors.keys():
+                self.colors[key] = themes[self.theme_name][key]
+        except FileNotFoundError as exc:
+            logging.warning('Themes file not found')
+        except yaml.YAMLError as exc:
+            if hasattr(exc, 'problem_mark') and exc.__context__ != None:
+                logging.warning(
+                    f'Failed to parse themes file:\n{str(exc.problem_mark)}\n'
+                    f'{exc.problem} {exc.__context__}'
+                )
+            else: logging.warning('Failed to parse themes file')
+        except IndexError as exc: logging.warning("Themes file invalid")
+        i = 0
+        for key in self.colors:
+            if key == 'background': pass
+            else:
+                logging.info(f'val: {i}, {self.colors[key]}, {self.colors["background"]}')
+                curses.init_pair(i, self.colors[key], self.colors['background'])
+            i += 1
+
+async def close_client(serv: PTZ_Server, tg:asyncio.TaskGroup) -> None:
+    logging.info('Client shutdown command received')
+    await serv.close()
+
+async def console(tg: asyncio.TaskGroup, 
+                  serv: PTZ_Server, display: cursed_display) -> None:
+    display.draw_menu_main()
+    char = await display.get_ch()
+    await close_client(serv, tg)
+
 def init_logger(mdir):
     fname = datetime.now().strftime('%Y-%m-%d') + '.log'
     logging.basicConfig(
@@ -146,6 +198,18 @@ def init_logger(mdir):
         format = '%(levelname)s %(asctime)s %(message)s',
         datefmt = '%H:%M:%S'
     )
+
+async def async_main(stdscr: curses.window, mdir: pathlib.Path) -> None:
+    serv = PTZ_Server()
+    display = cursed_display(stdscr, mdir, serv)
+    async with asyncio.TaskGroup() as tg:
+        serv_con = tg.create_task(serv.connect())
+        con = tg.create_task(console(tg, serv, display))
+
+def main(stdscr: curses.window) -> None:
+    mdir = pathlib.Path(__file__).parent.resolve()
+    init_logger(mdir)
+    asyncio.run(async_main(stdscr, mdir))
 
 if __name__ == '__main__':
     curses.wrapper(main)
